@@ -6,8 +6,6 @@
 
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
 
-<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22><text y=%221em%22 font-size=%2216%22>🎥</text></svg>">
-
 <style>
 body {
     margin: 0;
@@ -24,12 +22,6 @@ body {
     width: 90%;
     max-width: 650px;
     text-align: center;
-    padding: 20px 0;
-}
-
-h1 {
-    font-size: 28px;
-    margin-bottom: 25px;
 }
 
 input {
@@ -41,110 +33,33 @@ input {
     font-size: 16px;
     background: #2a2a40;
     color: white;
-    outline: none;
-    transition: 0.3s;
 }
 
-input::placeholder {
-    color: #5a5a7a;
-}
-
-input:focus {
-    box-shadow: 0 0 15px rgba(168,85,247,0.5);
-}
-
-select {
+select, button {
     width: 100%;
-    height: 45px;
-    border-radius: 20px;
-    margin-top: 8px;
-    background: #2a2a40;
-    color: white;
+    margin-top: 15px;
+    height: 50px;
+    border-radius: 25px;
     border: none;
-    padding: 10px;
-    outline: none;
 }
 
 button {
-    margin-top: 20px;
-    width: 100%;
-    height: 55px;
-    border-radius: 30px;
-    border: none;
     background: linear-gradient(90deg,#6366f1,#a855f7);
     color: white;
-    font-weight: 600;
-    font-size: 16px;
     cursor: pointer;
-    transition: 0.2s;
-}
-
-button:hover {
-    transform: scale(1.02);
-}
-
-button:active {
-    transform: scale(0.98);
-}
-
-button:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-}
-
-.progress-container {
-    margin-top: 20px;
-    opacity: 0;
-    transform: translateY(10px);
-    transition: 0.4s;
-}
-
-.progress-container.active {
-    opacity: 1;
-    transform: translateY(0);
-}
-
-.progress-text {
-    margin-bottom: 8px;
-    font-size: 14px;
 }
 
 .progress-bar {
+    margin-top: 20px;
     height: 8px;
     background: rgba(255,255,255,0.1);
     border-radius: 20px;
-    overflow: hidden;
 }
 
 .progress-fill {
     height: 100%;
     width: 0%;
     background: linear-gradient(90deg,#6366f1,#a855f7);
-    transition: width 0.3s;
-}
-
-.error {
-    margin-top: 15px;
-    color: #ff6b6b;
-    opacity: 0;
-    transition: 0.3s;
-}
-
-.error.active {
-    opacity: 1;
-}
-
-.label {
-    text-align: left;
-    margin-top: 15px;
-    font-size: 13px;
-    color: #aaa;
-}
-
-.feature {
-    margin-top: 15px;
-    font-size: 11px;
-    color: #4caf50;
 }
 </style>
 </head>
@@ -153,138 +68,59 @@ button:disabled {
 
 <div class="container">
 
-    <h1>YouTube Downloader</h1>
+<h1>YouTube Downloader</h1>
 
-    <input id="url" placeholder="https://www.youtube.com/watch?v=...">
+<input id="url" placeholder="Вставь ссылку">
 
-    <div class="label">Качество</div>
-    <select id="quality">
-        <option value="360">360p</option>
-        <option value="480">480p</option>
-        <option value="720" selected>720p</option>
-        <option value="1080">1080p</option>
-    </select>
+<select id="quality">
+<option value="360">360p</option>
+<option value="1080" selected>1080p (с перемоткой)</option>
+</select>
 
-    <div class="label">Режим</div>
-    <select id="mode">
-        <option value="video" selected>Видео (MP4)</option>
-        <option value="audio">Аудио (M4A)</option>
-    </select>
+<select id="mode">
+<option value="video">Видео + звук</option>
+<option value="audio">Только аудио</option>
+</select>
 
-    <button id="btn">⬇ Скачать</button>
+<button id="btn">Скачать</button>
 
-    <div class="progress-container" id="progressBox">
-        <div class="progress-text" id="progressText">Скачивание... 0%</div>
-        <div class="progress-bar">
-            <div class="progress-fill" id="progressFill"></div>
-        </div>
-    </div>
-    
-    <div class="feature">
-        ✅ Поддержка перемотки видео | ⚡ Быстрая загрузка
-    </div>
-
-    <div class="error" id="error"></div>
+<div class="progress-bar">
+<div class="progress-fill" id="fill"></div>
+</div>
 
 </div>
 
 <script>
-const btn = document.getElementById('btn');
-const input = document.getElementById('url');
-const quality = document.getElementById('quality');
-const mode = document.getElementById('mode');
-const progressBox = document.getElementById('progressBox');
-const progressFill = document.getElementById('progressFill');
-const progressText = document.getElementById('progressText');
-const errorBox = document.getElementById('error');
+const ws = new WebSocket(`ws://${location.host}/ws`);
+const fill = document.getElementById('fill');
 
-let ws = null;
-
-function connectWebSocket() {
-    ws = new WebSocket(`ws://${location.host}/ws`);
-    
-    ws.onmessage = (e) => {
-        const data = JSON.parse(e.data);
-        if (data.type === "progress") {
-            progressBox.classList.add("active");
-            const percent = Math.round(data.value);
-            progressFill.style.width = percent + "%";
-            progressText.innerText = `Скачивание... ${percent}%`;
-            
-            if (percent >= 100) {
-                setTimeout(() => {
-                    progressBox.classList.remove("active");
-                }, 1000);
-            }
-        }
-    };
-    
-    ws.onclose = () => {
-        setTimeout(connectWebSocket, 3000);
-    };
-}
-
-connectWebSocket();
-
-btn.onclick = async () => {
-    errorBox.classList.remove("active");
-    
-    const urlVal = input.value.trim();
-    
-    if (!urlVal) {
-        showError("Введите ссылку");
-        return;
+ws.onmessage = e => {
+    const data = JSON.parse(e.data);
+    if (data.type === 'progress') {
+        fill.style.width = data.value + '%';
     }
-    
-    btn.disabled = true;
-    btn.innerText = "Загрузка...";
-    
-    progressFill.style.width = "0%";
-    progressText.innerText = "Скачивание... 0%";
-    progressBox.classList.add("active");
-    
-    try {
-        const res = await fetch('/download', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({
-                url: urlVal,
-                quality: quality.value,
-                mode: mode.value
-            })
-        });
-        
-        if (!res.ok) {
-            const error = await res.json();
-            throw new Error(error.error || "Ошибка");
-        }
-        
-        const blob = await res.blob();
-        
-        const link = document.createElement('a');
-        const blobUrl = URL.createObjectURL(blob);
-        link.href = blobUrl;
-        link.download = mode.value === 'video' ? 'video.mp4' : 'audio.m4a';
-        link.click();
-        
-        URL.revokeObjectURL(blobUrl);
-        
-    } catch (e) {
-        showError(e.message);
-        progressBox.classList.remove("active");
-    }
-    
-    btn.disabled = false;
-    btn.innerText = "⬇ Скачать";
 };
 
-function showError(msg) {
-    errorBox.innerText = msg;
-    errorBox.classList.add("active");
-    setTimeout(() => {
-        errorBox.classList.remove("active");
-    }, 3000);
-}
+document.getElementById('btn').onclick = async () => {
+    const url = document.getElementById('url').value;
+
+    const res = await fetch('/download', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({
+            url,
+            quality: document.getElementById('quality').value,
+            mode: document.getElementById('mode').value
+        })
+    });
+
+    const blob = await res.blob();
+
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'video.mp4';
+    a.click();
+};
 </script>
 
 </body>
