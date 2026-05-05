@@ -22,6 +22,12 @@ body {
     width: 90%;
     max-width: 650px;
     text-align: center;
+    padding: 20px 0;
+}
+
+h1 {
+    font-size: 28px;
+    margin-bottom: 25px;
 }
 
 input {
@@ -33,33 +39,79 @@ input {
     font-size: 16px;
     background: #2a2a40;
     color: white;
+    outline: none;
+    transition: 0.3s;
 }
 
-select, button {
+input::placeholder {
+    color: #5a5a7a;
+}
+
+input:focus {
+    box-shadow: 0 0 15px rgba(168,85,247,0.5);
+}
+
+select {
     width: 100%;
-    margin-top: 15px;
-    height: 50px;
-    border-radius: 25px;
+    height: 45px;
+    border-radius: 20px;
+    margin-top: 8px;
+    background: #2a2a40;
+    color: white;
     border: none;
+    padding: 10px;
+    outline: none;
 }
 
 button {
+    margin-top: 20px;
+    width: 100%;
+    height: 55px;
+    border-radius: 30px;
+    border: none;
     background: linear-gradient(90deg,#6366f1,#a855f7);
     color: white;
+    font-weight: 600;
+    font-size: 16px;
     cursor: pointer;
+    transition: 0.2s;
+}
+
+button:hover {
+    transform: scale(1.02);
+}
+
+button:active {
+    transform: scale(0.98);
+}
+
+button:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.progress-container {
+    margin-top: 20px;
 }
 
 .progress-bar {
-    margin-top: 20px;
     height: 8px;
     background: rgba(255,255,255,0.1);
     border-radius: 20px;
+    overflow: hidden;
 }
 
 .progress-fill {
     height: 100%;
     width: 0%;
     background: linear-gradient(90deg,#6366f1,#a855f7);
+    transition: width 0.3s;
+}
+
+.error {
+    margin-top: 15px;
+    color: #ff6b6b;
+    font-size: 14px;
 }
 </style>
 </head>
@@ -68,31 +120,37 @@ button {
 
 <div class="container">
 
-<h1>YouTube Downloader</h1>
+    <h1>YouTube Downloader</h1>
 
-<input id="url" placeholder="Вставь ссылку">
+    <input id="url" placeholder="https://www.youtube.com/watch?v=...">
 
-<select id="quality">
-<option value="360">360p</option>
-<option value="1080" selected>1080p (с перемоткой)</option>
-</select>
+    <select id="quality">
+        <option value="360">360p</option>
+        <option value="1080" selected>1080p (с перемоткой)</option>
+    </select>
 
-<select id="mode">
-<option value="video">Видео + звук</option>
-<option value="audio">Только аудио</option>
-</select>
+    <select id="mode">
+        <option value="video">Видео + звук</option>
+        <option value="audio">Только аудио</option>
+    </select>
 
-<button id="btn">Скачать</button>
+    <button id="btn">⬇ Скачать</button>
 
-<div class="progress-bar">
-<div class="progress-fill" id="fill"></div>
-</div>
+    <div class="progress-container">
+        <div class="progress-bar">
+            <div class="progress-fill" id="fill"></div>
+        </div>
+    </div>
+
+    <div class="error" id="error"></div>
 
 </div>
 
 <script>
 const ws = new WebSocket(`ws://${location.host}/ws`);
 const fill = document.getElementById('fill');
+const btn = document.getElementById('btn');
+const errorBox = document.getElementById('error');
 
 ws.onmessage = e => {
     const data = JSON.parse(e.data);
@@ -101,25 +159,54 @@ ws.onmessage = e => {
     }
 };
 
-document.getElementById('btn').onclick = async () => {
-    const url = document.getElementById('url').value;
+btn.onclick = async () => {
+    errorBox.innerText = "";
 
-    const res = await fetch('/download', {
-        method: 'POST',
-        headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({
-            url,
-            quality: document.getElementById('quality').value,
-            mode: document.getElementById('mode').value
-        })
-    });
+    const url = document.getElementById('url').value.trim();
 
-    const blob = await res.blob();
+    if (!url) {
+        errorBox.innerText = "Вставь ссылку";
+        return;
+    }
 
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = 'video.mp4';
-    a.click();
+    btn.disabled = true;
+    btn.innerText = "Скачивание...";
+
+    try {
+        const res = await fetch('/download', {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({
+                url,
+                quality: document.getElementById('quality').value,
+                mode: document.getElementById('mode').value
+            })
+        });
+
+        // 🔥 фикс ошибки Unexpected token '<'
+        if (!res.ok) {
+            let text = await res.text();
+            try {
+                const err = JSON.parse(text);
+                throw new Error(err.error);
+            } catch {
+                throw new Error("Ошибка сервера");
+            }
+        }
+
+        const blob = await res.blob();
+
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'video.mp4';
+        a.click();
+
+    } catch (e) {
+        errorBox.innerText = e.message;
+    }
+
+    btn.disabled = false;
+    btn.innerText = "⬇ Скачать";
 };
 </script>
 
