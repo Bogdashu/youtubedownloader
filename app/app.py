@@ -1,186 +1,166 @@
+import os
+import re
 import json
 import threading
 import subprocess
-import sys
-from flask import Flask, request, render_template, Response
+import tempfile
+import shutil
+from flask import Flask, render_template, request, Response, stream_with_context
 from flask_sock import Sock
 
 app = Flask(__name__)
 sock = Sock(app)
 
-# ======================
-# 🔒 ЛИМИТЫ
-# ======================
-active_downloads = 0
-lock = threading.Lock()
-MAX_DOWNLOADS = 1
-active_ips = set()
-ip_lock = threading.Lock()
+clients = set()
 
-# ======================
-# 🌐 FRONTEND
-# ======================
-@app.route("/")
-def index():
-    return render_template("index.html")
-
-
-# ======================
-# 📡 WEBSOCKET PROGRESS
-# ======================
-clients = []
-
-@sock.route("/ws")
+# ---------------- WebSocket ----------------
+@sock.route('/ws')
 def ws(ws):
-    clients.append(ws)
+    clients.add(ws)
     try:
         while True:
-            ws.receive()
-    except:
-        if ws in clients:
-            clients.remove(ws)
-
-
-def send_progress(value):
-    msg = json.dumps({"type": "progress", "value": value})
-    for c in clients[:]:
-        try:
-            c.send(msg)
-        except:
-            if c in clients:
-                clients.remove(c)
-
-
-# ======================
-# 🚀 СТРИМ С ПЕРЕМОТКОЙ
-# ======================
-def stream_ytdlp(url, mode, quality, user_ip):
-    global active_downloads
-
-    with lock:
-        if active_downloads >= MAX_DOWNLOADS:
-            yield b"SERVER BUSY"
-            return
-        active_downloads += 1
-    
-    with ip_lock:
-        active_ips.add(user_ip)
-
-    process = None
-    
-    try:
-        if mode == "audio":
-            fmt = "bestaudio[ext=m4a]/bestaudio"
-            cmd = [
-                sys.executable, "-m", "yt_dlp",
-                "-f", fmt,
-                "-o", "-",
-                "--no-playlist",
-                "--no-part",
-                "--buffer-size", "64k",
-                url
-            ]
-        else:
-            # Используем bestvideo+bestaudio для правильной перемотки
-            if quality == 1080:
-                fmt = "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080]"
-            elif quality == 720:
-                fmt = "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720]"
-            else:
-                fmt = f"best[height<={quality}]"
-            
-            cmd = [
-                sys.executable, "-m", "yt_dlp",
-                "-f", fmt,
-                "-o", "-",
-                "--no-playlist",
-                "--no-part",
-                "--buffer-size", "64k",
-                "--fixup", "force",  # Важно для перемотки
-                url
-            ]
-        
-        process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            bufsize=0
-        )
-        
-        total_sent = 0
-        last_progress = 0
-        
-        while True:
-            chunk = process.stdout.read(65536)  # 64KB как ты просил
-            if not chunk:
+            if ws.receive() is None:
                 break
-            
-            total_sent += len(chunk)
-            
-            # Прогресс
-            progress = min(int(total_sent / 500000), 95)
-            if progress > last_progress:
-                send_progress(progress)
-                last_progress = progress
-            
-            yield chunk
-        
-        send_progress(100)
-        
-        if process.poll() is None:
-            process.kill()
-            
-    except Exception as e:
-        print(f"Error: {e}")
-        yield b""
     finally:
-        if process and process.poll() is None:
-            process.kill()
-        with lock:
-            active_downloads -= 1
-        with ip_lock:
-            active_ips.discard(user_ip)
+        clients.discard(ws)
 
+def broadcast(data):
+    dead = []
+    for ws in clients:
+        try:
+            ws.send(json.dumps(data))
+        except:
+            dead.append(ws)
+    for d in dead:
+        clients.discard(d)
 
-# ======================
-# ⬇ DOWNLOAD ENDPOINT
-# ======================
-@app.route("/download", methods=["POST"])
+# ---------------- Main page ----------------
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+# ---------------- Progress ----------------
+progress_regex = re.compile(r'(\d{1,3}\.\d)%')
+
+def parse_progress(line):
+    match = progress_regex.search(line)
+    if match:
+        return float(match.group(1))
+    return None
+
+# ---------------- Download ----------------
+@app.route('/download', methods=['POST'])
 def download():
-    data = request.json
-    url = data.get("url")
-    quality = int(data.get("quality", 720))
-    mode = data.get("mode", "video")
-    user_ip = request.remote_addr
+    data = request.json or {}
+    url = data.get('url')
+    quality = data.get('quality', '360')
+    mode = data.get('mode', 'video')
 
     if not url:
-        return {"error": "NO URL"}, 400
-    
-    with ip_lock:
-        if user_ip in active_ips:
-            return {"error": "У вас уже есть загрузка"}, 429
-    
-    with lock:
-        if active_downloads >= MAX_DOWNLOADS:
-            return {"error": "Сервер занят"}, 429
+        return {"error": "Нет URL"}, 400
 
-    if mode == "audio":
-        mimetype = "audio/mp4"
-        filename = "audio.m4a"
+    if mode == 'audio':
+        format_code = "bestaudio/best"
     else:
-        mimetype = "video/mp4"
-        filename = "video.mp4"
+        if quality == '1080':
+            format_code = "bv*[height<=1080]+ba/b[height<=1080]"
+        else:
+            format_code = "best[height<=360]/best"
 
-    return Response(
-        stream_ytdlp(url, mode, quality, user_ip),
-        mimetype=mimetype,
-        headers={
-            "Content-Disposition": f"attachment; filename={filename}",
-            "Cache-Control": "no-cache",
-            "Accept-Ranges": "bytes"  # Для перемотки
-        }
-    )
+    def generate():
+        tmpdir = tempfile.mkdtemp(prefix="yt_")
+
+        try:
+            outtmpl = os.path.join(tmpdir, "video.%(ext)s")
+
+            cmd = [
+                "python", "-m", "yt_dlp",
+                "-f", format_code,
+                "--merge-output-format", "mp4",
+                "--no-playlist",
+                "--newline",
+                "--fixup", "force",
+                "-o", outtmpl,
+                url
+            ]
+
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1
+            )
+
+            def read_stderr():
+                for line in process.stderr:
+                    percent = parse_progress(line)
+                    if percent is not None:
+                        broadcast({
+                            "type": "progress",
+                            "value": round(percent, 1)
+                        })
+
+            threading.Thread(target=read_stderr, daemon=True).start()
+
+            process.wait()
+
+            if process.returncode != 0:
+                raise RuntimeError("Ошибка скачивания")
+
+            files = [
+                os.path.join(tmpdir, f)
+                for f in os.listdir(tmpdir)
+                if f.startswith("video.")
+            ]
+
+            if not files:
+                raise RuntimeError("Файл не найден")
+
+            downloaded_file = max(files, key=os.path.getmtime)
+
+            final_file = os.path.join(tmpdir, "final.mp4")
+
+            ffmpeg_cmd = [
+                "ffmpeg",
+                "-y",
+                "-i", downloaded_file,
+                "-map", "0:v:0",
+                "-map", "0:a:0?",
+                "-c:v", "copy",
+                "-c:a", "aac",
+                "-b:a", "192k",
+                "-movflags", "+faststart",
+                final_file
+            ]
+
+            result = subprocess.run(ffmpeg_cmd, capture_output=True)
+
+            if result.returncode != 0:
+                raise RuntimeError("Ошибка ffmpeg")
+
+            with open(final_file, "rb") as f:
+                while True:
+                    chunk = f.read(1024 * 64)
+                    if not chunk:
+                        break
+                    yield chunk
+
+        except GeneratorExit:
+            pass
+        except Exception as e:
+            yield json.dumps({"error": str(e)}).encode()
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    headers = {
+        "Content-Disposition": 'attachment; filename="video.mp4"',
+        "Content-Type": "application/octet-stream"
+    }
+
+    return Response(stream_with_context(generate()), headers=headers)
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=11643, threaded=False)
+    port = int(os.environ.get("PORT", 11643))
+    app.run(host="0.0.0.0", port=port)
