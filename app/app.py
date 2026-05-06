@@ -40,7 +40,8 @@ def index():
     return render_template('index.html')
 
 # ---------------- Progress ----------------
-progress_regex = re.compile(r'(\d{1,3}\.\d)%')
+# 🔥 исправленный regex
+progress_regex = re.compile(r'(\d{1,3}(?:\.\d+)?)%')
 
 def parse_progress(line):
     match = progress_regex.search(line)
@@ -59,13 +60,14 @@ def download():
     if not url:
         return {"error": "Нет URL"}, 400
 
+    # 💡 Гарантируем наличие аудио
     if mode == 'audio':
-        format_code = "bestaudio/best"
+        format_code = "bestaudio"
     else:
         if quality == '1080':
-            format_code = "bv*[height<=1080]+ba/b[height<=1080]"
+            format_code = "bv*[height<=1080]+ba/bestvideo+bestaudio/best"
         else:
-            format_code = "best[height<=360]/best"
+            format_code = "bv*[height<=360]+ba/best"
 
     def generate():
         tmpdir = tempfile.mkdtemp(prefix="yt_")
@@ -76,11 +78,14 @@ def download():
             cmd = [
                 "python", "-m", "yt_dlp",
                 "-f", format_code,
+                "-N", "8",  # 🚀 ускорение
                 "--merge-output-format", "mp4",
+                "--postprocessor-args", "ffmpeg:-c:a aac -b:a 192k",
                 "--no-playlist",
                 "--newline",
-                "--fixup", "force",
+                "--progress",  # 💎 помогает стабильности прогресса
                 "-o", outtmpl,
+                "--print", "after_move:filepath",
                 url
             ]
 
@@ -92,15 +97,32 @@ def download():
                 bufsize=1
             )
 
+            downloaded_path = {"path": None}
+
+            # 🔥 универсальный обработчик строк
+            def handle_line(line):
+                percent = parse_progress(line)
+                if percent is not None:
+                    broadcast({
+                        "type": "progress",
+                        "value": round(percent, 1)
+                    })
+
+            def read_stdout():
+                for line in process.stdout:
+                    line = line.strip()
+                    if line:
+                        downloaded_path["path"] = line
+                        handle_line(line)
+
             def read_stderr():
                 for line in process.stderr:
-                    percent = parse_progress(line)
-                    if percent is not None:
-                        broadcast({
-                            "type": "progress",
-                            "value": round(percent, 1)
-                        })
+                    handle_line(line)
 
+            # 🚀 чтобы не было 0% в начале
+            broadcast({"type": "progress", "value": 1})
+
+            threading.Thread(target=read_stdout, daemon=True).start()
             threading.Thread(target=read_stderr, daemon=True).start()
 
             process.wait()
@@ -108,36 +130,13 @@ def download():
             if process.returncode != 0:
                 raise RuntimeError("Ошибка скачивания")
 
-            files = [
-                os.path.join(tmpdir, f)
-                for f in os.listdir(tmpdir)
-                if f.startswith("video.")
-            ]
+            final_file = downloaded_path["path"]
 
-            if not files:
+            if not final_file or not os.path.exists(final_file):
                 raise RuntimeError("Файл не найден")
 
-            downloaded_file = max(files, key=os.path.getmtime)
-
-            final_file = os.path.join(tmpdir, "final.mp4")
-
-            ffmpeg_cmd = [
-                "ffmpeg",
-                "-y",
-                "-i", downloaded_file,
-                "-map", "0:v:0",
-                "-map", "0:a:0?",
-                "-c:v", "copy",
-                "-c:a", "aac",
-                "-b:a", "192k",
-                "-movflags", "+faststart",
-                final_file
-            ]
-
-            result = subprocess.run(ffmpeg_cmd, capture_output=True)
-
-            if result.returncode != 0:
-                raise RuntimeError("Ошибка ffmpeg")
+            # 💯 в конце ставим 100%
+            broadcast({"type": "progress", "value": 100})
 
             with open(final_file, "rb") as f:
                 while True:
@@ -162,5 +161,5 @@ def download():
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 11643))
+    port = int(os.environ.get("PORT", 9402))
     app.run(host="0.0.0.0", port=port)
